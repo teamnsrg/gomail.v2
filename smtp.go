@@ -55,6 +55,51 @@ func NewPlainDialer(host string, port int, username, password string) *Dialer {
 	return NewDialer(host, port, username, password)
 }
 
+// DialNoTLS does the same thing as dial, but never uses TLS
+func (d *Dialer) DialNoTLS() (SendCloser, error) {
+	conn, err := netDialTimeout("tcp", addr(d.Host, d.Port), 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := smtpNewClient(conn, d.Host)
+	if err != nil {
+		return nil, err
+	}
+
+	if d.LocalName != "" {
+		if err := c.Hello(d.LocalName); err != nil {
+			return nil, err
+		}
+	}
+
+	if d.Auth == nil && d.Username != "" {
+		if ok, auths := c.Extension("AUTH"); ok {
+			if strings.Contains(auths, "CRAM-MD5") {
+				d.Auth = smtp.CRAMMD5Auth(d.Username, d.Password)
+			} else if strings.Contains(auths, "LOGIN") &&
+				!strings.Contains(auths, "PLAIN") {
+				d.Auth = &loginAuth{
+					username: d.Username,
+					password: d.Password,
+					host:     d.Host,
+				}
+			} else {
+				d.Auth = smtp.PlainAuth("", d.Username, d.Password, d.Host)
+			}
+		}
+	}
+
+	if d.Auth != nil {
+		if err = c.Auth(d.Auth); err != nil {
+			c.Close()
+			return nil, err
+		}
+	}
+
+	return &smtpSender{c, d}, nil
+}
+
 // Dial dials and authenticates to an SMTP server. The returned SendCloser
 // should be closed when done using it.
 func (d *Dialer) Dial() (SendCloser, error) {
